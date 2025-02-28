@@ -604,17 +604,24 @@ def make_df_wrapper(model_file, index_file, output_file: "Path", save_extension)
     
     # also compute averages across sessions
     count = "usage"
-    syllable_key = "labels (usage sort)"
     groupby = ["group", "uuid"]
     usage_normalization = True
 
     stats_df = compute_behavioral_statistics(
-        moseq_df, count=count, syllable_key=syllable_key,
+        moseq_df, count=count, syllable_key="labels (usage sort)",
+        usage_normalization=usage_normalization,
+        groupby=groupby
+    )
+
+    stats_df_orig_labels = compute_behavioral_statistics(
+        moseq_df, count=count, syllable_key="labels (original)",
         usage_normalization=usage_normalization,
         groupby=groupby
     )
 
     if save_extension == "csv":
         stats_df.to_csv(output_file.with_name(output_file.stem + "_stats.csv"))
+        stats_df_orig_labels.to_csv(output_file.with_name(output_file.stem + "_orig_label_stats.csv"))
     elif save_extension == "parquet":
         stats_df.to_parquet(output_file.with_name(output_file.stem + "_stats.parquet"), compression="brotli")
+        stats_df_orig_labels.to_parquet(output_file.with_name(output_file.stem + "_orig_label_stats.parquet"), compression="brotli")
