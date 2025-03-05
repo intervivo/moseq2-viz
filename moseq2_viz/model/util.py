@@ -689,7 +689,11 @@ def labels_to_changepoints(labels, fs=30):
     cp_dist = []
 
     for lab in labels:
-        cp_dist.append(np.diff(get_transitions(lab)[1].squeeze()) / fs)
+        try:
+            cp_dist.append(np.diff(get_transitions(lab)[1].squeeze()) / fs)
+        except ValueError:
+            # handles empty sequences
+            cp_dist.append(np.array([len(lab) / fs]))
 
     return np.concatenate(cp_dist)
 
