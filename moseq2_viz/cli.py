@@ -83,16 +83,24 @@ def add_group(index_file, **config_data):
     default="p",
     help="Model extensions to look for in input directory",
 )
-@click.option("--fps", type=int, default=30, help="Frames per second")
+@click.option("--fps", type=int, default=30, help="Frames rate of the depth videos")
 @click.option(
     "--objective",
-    type=str,
+    type=click.Choice(["duration (mean match)", "duration (median match)", "duration (target match)", "infer kappa"]),
     default="duration (mean match)",
     help="The objective finds the best model when comparing with model-free changepoints",
 )
-def get_best_fit_model(model_dir, cp_path, output_file, plot_all, ext, fps, objective):
+@click.option(
+    "--target-dur",
+    type=float,
+    default=0.6,
+    help="Target syllable duration in seconds for the best model",
+)
+@click.option('--print-only-kappa', default=False, is_flag=True, help="Flag to only print the kappa value of the best model")
+@click.option('--aggregate-folder', default=None, type=click.Path(exists=True, ), help="Folder with aggregated extractions")
+def get_best_fit_model(model_dir, cp_path, output_file, plot_all, ext, fps, objective, target_dur, print_only_kappa, aggregate_folder):
     get_best_fit_model_wrapper(
-        model_dir, cp_path, output_file, plot_all, ext, fps, objective
+        model_dir, cp_path, output_file, plot_all, ext, fps, objective, target_dur, print_only_kappa, aggregate_folder
     )
 
 

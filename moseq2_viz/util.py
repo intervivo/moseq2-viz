@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 from glob import glob
 from typing import Union
+from pathlib import Path
 import ruamel.yaml as yaml
 from cytoolz import curry, compose
 from cytoolz.curried import valmap
@@ -126,7 +127,7 @@ def h5_to_dict(h5file, path: str = "/") -> dict:
     out (dict): dictionary of all h5 contents
     """
 
-    if isinstance(h5file, str):
+    if isinstance(h5file, (str, Path)):
         with h5py.File(h5file, "r") as f:
             out = _load_h5_to_dict(f, path)
     elif isinstance(h5file, (h5py.File, h5py.Group)):
@@ -136,12 +137,12 @@ def h5_to_dict(h5file, path: str = "/") -> dict:
     return out
 
 
-def get_timestamps_from_h5(h5file: str) -> np.ndarray:
+def get_timestamps_from_h5(h5file: Union[str, Path]) -> np.ndarray:
     """
     Return a dict of timestamps from h5file.
 
     Args:
-    h5file (str): path to h5 file.
+    h5file (str or Path): path to h5 file.
 
     Returns:
     (np.ndarray): timestamps from extraction within the h5file.
@@ -156,12 +157,12 @@ def get_timestamps_from_h5(h5file: str) -> np.ndarray:
         return h5_to_dict(h5file, "metadata/timestamps")["timestamps"]
 
 
-def get_metadata_path(h5file):
+def get_metadata_path(h5file: Union[str, Path]) -> str:
     """
     Return path within h5 file that contains the kinect extraction metadata.
 
     Args:
-    h5file (str): path to h5 file.
+    h5file (str or Path): path to h5 file.
 
     Returns:
     (str): path to acquistion metadata within h5 file.
@@ -176,12 +177,12 @@ def get_metadata_path(h5file):
             raise KeyError("acquisition metadata not found")
 
 
-def load_changepoint_distribution(cpfile):
+def load_changepoint_distribution(cpfile: Union[str, Path]) -> np.ndarray:
     """
     Load changepoint durations from given model free changepoints file.
 
     Args:
-    cpfile (str): Path to changepoints h5 file.
+    cpfile (str or Path): Path to changepoints h5 file.
 
     Returns:
     (numpy.array): Array of changepoint durations.

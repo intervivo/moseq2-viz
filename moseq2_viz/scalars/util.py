@@ -16,9 +16,6 @@ from moseq2_viz.util import (h5_to_dict, strided_app, h5_filepath_from_sorted,
                              get_timestamps_from_h5, parse_index)
 
 
-def _star_itemmap(func, d):
-    return dict(starmap(func, d.items()))
-
 
 def star_valmap(func, d):
     """

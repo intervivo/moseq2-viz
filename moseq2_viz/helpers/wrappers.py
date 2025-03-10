@@ -2,17 +2,19 @@
 Wrapper functions CLI and GUI.
 """
 
-import os
+import re
 import shutil
+import logging
+import numpy as np
 import matplotlib as mpl
-from glob import glob
 from ruamel import yaml
+from pathlib import Path
 from tqdm.auto import tqdm
 from cytoolz import keyfilter, groupby
-from os.path import exists, join, dirname, basename
 from moseq2_viz.scalars.util import scalars_to_dataframe, compute_all_pdf_data
 from moseq2_viz.io.video import write_crowd_movies, write_crowd_movie_info_file
 from moseq2_viz.util import (
+    get_timestamps_from_h5,
     parse_index,
     get_index_hits,
     get_metadata_path,
@@ -33,6 +35,7 @@ from moseq2_viz.viz import (
     plot_cp_comparison,
 )
 from moseq2_viz.model.util import (
+    model_comparisons_to_df,
     relabel_by_usage,
     parse_model_results,
     get_best_fit,
@@ -42,21 +45,16 @@ from moseq2_viz.model.util import (
 )
 
 
-def _make_directories(crowd_movie_path, plot_path):
+def _make_directories(path):
     """
     create directory to save output crowd movies or figures.
 
     Args:
-    crowd_movie_path (str): path to crowd movie directory.
-    plot_path (str): path to figure plots directory.
+    path (str): path to directory to save output.
     """
 
-    # Set up output directory to save crowd movies in
-    if crowd_movie_path is not None:
-        os.makedirs(crowd_movie_path, exist_ok=True)
-    # Set up output directory to save plots in
-    if plot_path is not None:
-        os.makedirs(dirname(plot_path), exist_ok=True)
+    if path is not None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
 
 
 def init_wrapper_function(index_file=None, output_dir=None, output_file=None):
@@ -73,7 +71,8 @@ def init_wrapper_function(index_file=None, output_dir=None, output_file=None):
     sorted_index (dict): OrderedDict object representing a sorted version of index
     """
 
-    _make_directories(output_dir, output_file)
+    _make_directories(output_dir)
+    _make_directories(output_file)
 
     # Get sorted index dict
     if index_file is not None:
@@ -128,13 +127,16 @@ def add_group_wrapper(index_file, config_data):
 
 
 def get_best_fit_model_wrapper(
-    model_dir,
-    cp_file,
-    output_file,
-    plot_all=False,
-    ext="p",
-    fps=30,
-    objective="duration (mean match)",
+    model_dir: str,
+    cp_file: str,
+    output_file: str,
+    plot_all: bool = False,
+    ext: str = "p",
+    fps: float = 30,
+    objective: str = "duration (mean match)",
+    target_dur: float = 0.6,
+    print_only_kappa: bool = False,
+    aggregate_folder: str = None,
 ):
     """
     find the model that best match the model-free changepoint given an objective.
@@ -152,13 +154,26 @@ def get_best_fit_model_wrapper(
     best_model_info (dict): Dictionary containing the best model info with respect to given objective.
     fig (pyplot.figure): figure of model and model-free changepoint comparison.
     """
+    if aggregate_folder is not None:
+        h5s = list(Path(aggregate_folder).glob(f"*.h5"))
+        # use this to get actual FPS
+        estimates = []
+        for h5 in h5s:
+            timestamps = get_timestamps_from_h5(h5) / 1000  # convert to seconds
+            dt = np.diff(timestamps)
+            estimates.append(np.median(dt))
+        new_fps = 1 / np.mean(estimates)
+        logging.info(f"Replacing specified FPS {fps} with estimated FPS from data: {new_fps}")
+        fps = new_fps
+
+    objective_kappa_key = objective if objective == "infer kappa" else f"best model - {objective} kappa"
 
     # Get models
-    if not ext.startswith("."):
-        ext = "." + ext
-    models = glob(join(model_dir, f"*{ext}"), recursive=True)
+    ext = re.sub(r"^(?!\.)", ".", ext)  # add leading dot if not present
+    models = list(map(str, Path(model_dir).glob(f"**/*{ext}")))
 
-    print(f"Found {len(models)} models in given input folder: {model_dir}")
+    if not print_only_kappa:
+        print(f"Found {len(models)} models in given input folder: {model_dir}")
 
     # Load models into a single dict and compute their changepoints
     def _load_models(pth):
@@ -169,33 +184,38 @@ def get_best_fit_model_wrapper(
     model_results = {name: _load_models(name) for name in models}
 
     # Find the best fit model by comparing their median durations with the PC scores changepoints
-    best_model_info, pca_changepoints = get_best_fit(cp_file, model_results)
+    best_model_info, pca_changepoints = get_best_fit(cp_file, model_results, target_dur)
 
-    print(
-        f"Model closest to {objective} objective",
-        best_model_info[f"best model - {objective}"],
-    )
-    if objective != "median_loglikelihood":
-        print(
-            "Model kappa value is", best_model_info[f"best model - {objective} kappa"]
+    if not print_only_kappa:
+        if objective != "median_loglikelihood":
+            print(
+                "Model kappa value is", best_model_info[objective_kappa_key]
+            )
+        if objective != "infer kappa":
+            print(
+                f"Model closest to {objective} objective",
+                best_model_info[f"best model - {objective}"],
+            )
+    else:
+        print(best_model_info[objective_kappa_key])
+
+    model_stats = model_comparisons_to_df(model_results, pca_changepoints)
+    model_stats.to_csv(Path(model_dir) / "model_kappa_scan_stats.csv")
+
+    fig = None
+    if objective != "infer kappa":
+        # Graph model CP difference(s)
+        fig, ax = plot_cp_comparison(
+            model_results,
+            pca_changepoints,
+            plot_all=plot_all,
+            best_model=best_model_info[f"best model - {objective}"],
         )
 
-    # Graph model CP difference(s)
-    fig, ax, model_stats = plot_cp_comparison(
-        model_results,
-        pca_changepoints,
-        plot_all=plot_all,
-        best_model=best_model_info[f"best model - {objective}"],
-    )
-
-    # Save the figure
-    if output_file is not None:
-        legends = [c for c in ax.get_children() if isinstance(c, mpl.legend.Legend)]
-        save_fig(fig, output_file, bbox_extra_artists=legends, bbox_inches="tight")
-
-    # Save the model_stats to csv
-    if model_stats is not None:
-        model_stats.to_csv(os.path.join(model_dir, "model_kappa_scan_stats.csv"))
+        # Save the figure
+        if output_file is not None:
+            legends = [c for c in ax.get_children() if isinstance(c, mpl.legend.Legend)]
+            save_fig(fig, output_file, bbox_extra_artists=legends, bbox_inches="tight")
 
     return best_model_info, fig
 
@@ -472,6 +492,9 @@ def make_crowd_movies_wrapper(index_file, model_path, output_dir, config_data):
     cm_paths (dict): Dictionary of syllables and their generated crowd movie paths
     """
 
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+
     # Load index file and model data
     model_fit = parse_model_results(model_path)
     _, sorted_index = init_wrapper_function(index_file, output_dir=output_dir)
@@ -495,7 +518,7 @@ def make_crowd_movies_wrapper(index_file, model_path, output_dir, config_data):
     uuid_set = set(label_uuids) & set(sorted_index["files"])
     # Make sure the files exist
     uuid_set = [
-        uuid for uuid in uuid_set if exists(sorted_index["files"][uuid]["path"][0])
+        uuid for uuid in uuid_set if Path(sorted_index["files"][uuid]["path"][0]).exists()
     ]
     # filter to only include existing UUIDs
     sorted_index["files"] = keyfilter(lambda k: k in uuid_set, sorted_index["files"])
@@ -585,7 +608,7 @@ def copy_h5_metadata_to_yaml_wrapper(input_dir):
         _dict["metadata"] = clean_dict(h5_to_dict(_h5, metadata_path))
 
         # Atomically write updated yaml
-        new_file = f"{basename(_yml)}_update.yaml"
+        new_file = Path(_yml).with_stem("_update")
         with open(new_file, "w+") as f:
             yaml.safe_dump(_dict, f)
         shutil.move(new_file, _yml)
@@ -619,9 +642,11 @@ def make_df_wrapper(model_file, index_file, output_file: "Path", save_extension)
         groupby=groupby
     )
 
-    if save_extension == "csv":
-        stats_df.to_csv(output_file.with_name(output_file.stem + "_stats.csv"))
-        stats_df_orig_labels.to_csv(output_file.with_name(output_file.stem + "_orig_label_stats.csv"))
-    elif save_extension == "parquet":
-        stats_df.to_parquet(output_file.with_name(output_file.stem + "_stats.parquet"), compression="brotli")
-        stats_df_orig_labels.to_parquet(output_file.with_name(output_file.stem + "_orig_label_stats.parquet"), compression="brotli")
+    out_name = output_file.with_name(output_file.stem + f"_stats.{save_extension}")
+    out_name_orig_label = output_file.with_name(output_file.stem + f"_orig_label_stats.{save_extension}")
+    kwargs = {"compression": "brotli"} if save_extension == "parquet" else {}
+    for df, out_name in zip([stats_df, stats_df_orig_labels], [out_name, out_name_orig_label]):
+        if save_extension == "csv":
+            df.to_csv(out_name, **kwargs)
+        elif save_extension == "parquet":
+            df.to_parquet(out_name, **kwargs)
