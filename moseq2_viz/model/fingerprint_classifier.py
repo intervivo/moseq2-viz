@@ -2,11 +2,10 @@
 Functions for creating fingerprint plots and linear classifier
 """
 
-from operator import pos
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from collections import defaultdict
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler, StandardScaler
+from sklearn.preprocessing import LabelEncoder
 
 from sklearn.model_selection import (
     StratifiedKFold,

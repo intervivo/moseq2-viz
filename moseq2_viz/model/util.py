@@ -3,19 +3,19 @@ Utility functions for handling model data during pre and post processing.
 """
 
 import os
-from statistics import median
 import h5py
 import glob
 import joblib
 import warnings
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from numpy import linalg
 from copy import deepcopy
-import matplotlib.pyplot as plt
+from scipy.stats import mode
+from itertools import product
 from sklearn.cluster import KMeans
 from typing import Iterator, Any, Dict
-from itertools import product
 from cytoolz.curried import get, get_in
 from os.path import join, basename, dirname
 from moseq2_viz.util import h5_to_dict, star
@@ -155,13 +155,14 @@ def merge_models(model_dir, ext='p',count='usage', force_merge=False,
     return model_data
 
 
-def get_best_fit(cp_path, model_results):
+def get_best_fit(cp_path, model_results, threshold=0.6):
     """
     Return the model with the closest median syllable duration and closest duration distribution to the model free changepoints given the objective.
 
     Args:
     cp_path (str): Path to PCA Changepoints h5 file.
     model_results (dict): dict of pairs of model names paired with dict containing their respective changepoints.
+    threshold (float): target duration to find the best model fit. Default: 0.6 seconds
 
     Returns:
     info (dict): information about the best-fit models.
@@ -176,24 +177,34 @@ def get_best_fit(cp_path, model_results):
     except OSError:
         raise Exception('Please ensure model free changepoint is computed and the resulting file name matches changepoints_path in progress_paths')
 
-    
-    
     def _compute_cp_dist_median(model):
         return np.abs(np.nanmedian(pca_cps) - np.nanmedian(model['changepoints']))
     
     def _compute_cp_dist_mean(model):
         return np.abs(np.nanmean(pca_cps) - np.nanmean(model['changepoints']))
 
+    def _compute_target_dist_mean(model):
+        return np.abs(threshold - np.nanmean(model['changepoints']))
+
     def _compute_jsd_dist(model):
         bins = np.linspace(0, 3, 90)
         h1, _ = np.histogram(pca_cps, bins=bins, density=True)
         h2, _ = np.histogram(model['changepoints'], bins=bins, density=True)
         return jensenshannon(h1, h2)
+
+    # fit line to predict best kappa
+    x = np.array([np.nanmean(model['changepoints']) for model in model_results.values()])
+    y = np.array([model['model_parameters']['kappa'] for model in model_results.values()])
+    slope, intercept = np.polyfit(x, np.log(y), 1)
+
+    kappa_hat = np.exp(slope * threshold + intercept)
     
     dur_dists_median = valmap(_compute_cp_dist_median, model_results)
     best_model_median, dist_median = min(dur_dists_median.items(), key=get(1))
     dur_dists_mean = valmap(_compute_cp_dist_mean, model_results)
     best_model_mean, dist_mean = min(dur_dists_mean.items(), key=get(1))
+    dur_dists_target = valmap(_compute_target_dist_mean, model_results)
+    best_model_target, dist_target = min(dur_dists_target.items(), key=get(1))
     jsd_dists = valmap(_compute_jsd_dist, model_results)
     best_jsd_model, jsd_dist = min(jsd_dists.items(), key=get(1))
 
@@ -209,19 +220,55 @@ def get_best_fit(cp_path, model_results):
         'best model - duration (median match) kappa': model_results[best_model_median]['model_parameters']['kappa'],
         'best model - duration (mean match)': best_model_mean,
         'best model - duration (mean match) kappa': model_results[best_model_mean]['model_parameters']['kappa'],
+        'best model - duration (target match)': best_model_target,
+        'best model - duration (target match) kappa': model_results[best_model_target]['model_parameters']['kappa'],
         'min duration median match (seconds)': dist_median,
         'duration distances median': dur_dists_median,
-        'min duration median match (seconds)': dist_mean,
-        'duration distances median': dur_dists_mean,
+        'min duration mean match (seconds)': dist_mean,
+        'duration distances mean': dur_dists_mean,
+        'min duration target match (seconds)': dist_target,
+        'duration distances target': dur_dists_target,
         'best model - jsd': best_jsd_model,
         'best model - jsd kappa': model_results[best_jsd_model]['model_parameters']['kappa'],
         'min jensen-shannon distance': jsd_dist,
         'jsd distances': jsd_dists,
         'best model - median_loglikelihood': model_median_loglikes,
-        'best model - loglikelihood': median_loglikes
+        'best model - loglikelihood': median_loglikes,
+        'infer kappa': np.round(kappa_hat)
     }
     
     return info, pca_cps
+
+
+def model_comparisons_to_df(model_results: dict, pc_cps: np.ndarray) -> pd.DataFrame:
+    """
+    Convert model results to a pandas dataframe.
+
+    Args:
+    model_results (dict): dict of model names paired with dict containing changepoints and model parameters.
+    pc_cps (1D array): pc changepoint durations.
+
+    Returns:
+    df (pandas.DataFrame): dataframe of model results.
+    """
+
+    df = []
+
+    for k, v in model_results.items():
+        df.append({
+            'file_name': k,
+            'model_kappa': v['model_parameters']['kappa'],
+            'model_mean': np.nanmean(v['changepoints']),
+            'model_median': np.nanmedian(v['changepoints']),
+            'model_mode': mode(v['changepoints'])[0][0],
+        })
+
+    df = pd.DataFrame(df)
+    df['pc_mean'] = np.nanmean(pc_cps)
+    df['pc_median'] = np.nanmedian(pc_cps)
+    df['pc_mode'] = mode(pc_cps)[0][0]
+
+    return df.sort_values(by='model_kappa')
 
 
 def _whiten_all(pca_scores: Dict[str, np.ndarray], center=True):
@@ -741,7 +788,7 @@ def parse_model_results(model_obj, restart_idx=0, resample_idx=-1,
     resample_idx (int): parameter used to select labels from a specific sampling iteration. Default is the last iteration (-1)
     map_uuid_to_keys (bool): flag to create a label dictionary where each key->value pair contains the uuid and the labels for that session.
     sort_labels_by_usage (bool): sort and re-assign labels by their usages.
-    count (str): method to compute syllable mean usage, either 'usage' or 'frames'.
+    count (str): method to compute syllable mean usage, either 'usage' or 'frames'. 
 
     Returns:
     output_dict (dict): dictionary with labels and model parameters
@@ -797,7 +844,7 @@ def parse_model_results(model_obj, restart_idx=0, resample_idx=-1,
     return output_dict
 
 
-def relabel_by_usage(labels, fill_value=-5, count='usage'):
+def relabel_by_usage(labels, count='usage'):
     """
     Resort model labels by their usages.
 
